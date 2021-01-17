@@ -90,7 +90,11 @@ public:
         if (!ffmpegCapture ||
            !icvRetrieveFrame_FFMPEG_p(ffmpegCapture, &data, &step, &width, &height, &cn))
             return false;
-        cv::Mat(height, width, CV_MAKETYPE(CV_8U, cn), data, step).copyTo(frame);
+
+        cv::Mat tmp(height, width, CV_MAKETYPE(CV_8U, cn), data, step);
+        this->rotateFrame(tmp);
+        tmp.copyTo(frame);
+
         return true;
     }
     virtual bool open( const cv::String& filename )
@@ -113,6 +117,30 @@ public:
 
 protected:
     CvCapture_FFMPEG* ffmpegCapture;
+
+    void rotateFrame(cv::Mat &mat) const
+    {
+        bool rotation_auto = 0 != getProperty(CAP_PROP_ORIENTATION_AUTO);
+        int rotation_angle = static_cast<int>(getProperty(CAP_PROP_ORIENTATION_META));
+
+        if(!rotation_auto || rotation_angle%360 == 0)
+        {
+            return;
+        }
+
+        cv::RotateFlags flag;
+        if(rotation_angle == 90 || rotation_angle == -270) { // Rotate clockwise 90 degrees
+            flag = cv::ROTATE_90_CLOCKWISE;
+        } else if(rotation_angle == 270 || rotation_angle == -90) { // Rotate clockwise 270 degrees
+            flag = cv::ROTATE_90_COUNTERCLOCKWISE;
+        } else if(rotation_angle == 180 || rotation_angle == -180) { // Rotate clockwise 180 degrees
+            flag = cv::ROTATE_180;
+        } else { // Unsupported rotation
+            return;
+        }
+
+        cv::rotate(mat, mat, flag);
+    }
 };
 
 } // namespace
@@ -170,9 +198,12 @@ protected:
 
 } // namespace
 
-cv::Ptr<cv::IVideoWriter> cvCreateVideoWriter_FFMPEG_proxy(const std::string& filename, int fourcc, double fps, const cv::Size &frameSize, bool isColor)
+cv::Ptr<cv::IVideoWriter> cvCreateVideoWriter_FFMPEG_proxy(const std::string& filename, int fourcc,
+                                                           double fps, const cv::Size& frameSize,
+                                                           const VideoWriterParameters& params)
 {
-    cv::Ptr<CvVideoWriter_FFMPEG_proxy> writer = cv::makePtr<CvVideoWriter_FFMPEG_proxy>(filename, fourcc, fps, frameSize, isColor != 0);
+    const bool isColor = params.get(VIDEOWRITER_PROP_IS_COLOR, true);
+    cv::Ptr<CvVideoWriter_FFMPEG_proxy> writer = cv::makePtr<CvVideoWriter_FFMPEG_proxy>(filename, fourcc, fps, frameSize, isColor);
     if (writer && writer->isOpened())
         return writer;
     return cv::Ptr<cv::IVideoWriter>();
@@ -186,6 +217,8 @@ cv::Ptr<cv::IVideoWriter> cvCreateVideoWriter_FFMPEG_proxy(const std::string& fi
 
 #if defined(BUILD_PLUGIN)
 
+#define ABI_VERSION 0
+#define API_VERSION 0
 #include "plugin_api.hpp"
 
 namespace cv {
@@ -362,36 +395,36 @@ CvResult CV_API_CALL cv_writer_write(CvPluginWriter handle, const unsigned char 
     }
 }
 
-static const OpenCV_VideoIO_Plugin_API_preview plugin_api_v0 =
+static const OpenCV_VideoIO_Plugin_API_preview plugin_api =
 {
     {
         sizeof(OpenCV_VideoIO_Plugin_API_preview), ABI_VERSION, API_VERSION,
         CV_VERSION_MAJOR, CV_VERSION_MINOR, CV_VERSION_REVISION, CV_VERSION_STATUS,
         "FFmpeg OpenCV Video I/O plugin"
     },
-    /*  1*/CAP_FFMPEG,
-    /*  2*/cv_capture_open,
-    /*  3*/cv_capture_release,
-    /*  4*/cv_capture_get_prop,
-    /*  5*/cv_capture_set_prop,
-    /*  6*/cv_capture_grab,
-    /*  7*/cv_capture_retrieve,
-    /*  8*/cv_writer_open,
-    /*  9*/cv_writer_release,
-    /* 10*/cv_writer_get_prop,
-    /* 11*/cv_writer_set_prop,
-    /* 12*/cv_writer_write
+    {
+        /*  1*/CAP_FFMPEG,
+        /*  2*/cv_capture_open,
+        /*  3*/cv_capture_release,
+        /*  4*/cv_capture_get_prop,
+        /*  5*/cv_capture_set_prop,
+        /*  6*/cv_capture_grab,
+        /*  7*/cv_capture_retrieve,
+        /*  8*/cv_writer_open,
+        /*  9*/cv_writer_release,
+        /* 10*/cv_writer_get_prop,
+        /* 11*/cv_writer_set_prop,
+        /* 12*/cv_writer_write
+    }
 };
 
 } // namespace
 
 const OpenCV_VideoIO_Plugin_API_preview* opencv_videoio_plugin_init_v0(int requested_abi_version, int requested_api_version, void* /*reserved=NULL*/) CV_NOEXCEPT
 {
-    if (requested_abi_version != 0)
-        return NULL;
-    if (requested_api_version != 0)
-        return NULL;
-    return &cv::plugin_api_v0;
+    if (requested_abi_version == ABI_VERSION && requested_api_version <= API_VERSION)
+        return &cv::plugin_api;
+    return NULL;
 }
 
 #endif // BUILD_PLUGIN
