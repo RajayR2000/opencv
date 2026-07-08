@@ -381,36 +381,36 @@ public:
         Mat res, nr, d;
         if( _results.needed() )
         {
-            _results.create(testcount, 1, CV_32F);
             res = _results.getMat();
         }
         if( _neighborResponses.needed() )
         {
-            _neighborResponses.create(testcount, k, CV_32F);
             nr = _neighborResponses.getMat();
         }
         if( _dists.needed() )
         {
-            _dists.create(testcount, k, CV_32F);
             d = _dists.getMat();
         }
 
         for (int i=0; i<test_samples.rows; ++i)
         {
             Mat _res, _nr, _d;
-            if (res.rows>i)
-            {
-                _res = res.row(i);
-            }
-            if (nr.rows>i)
-            {
-                _nr = nr.row(i);
-            }
-            if (d.rows>i)
-            {
-                _d = d.row(i);
-            }
             tr.findNearest(test_samples.row(i), k, Emax, _res, _nr, _d, noArray());
+            if( _results.needed() )
+            {
+                res.push_back(_res.t());
+                _results.assign(res);
+            }
+            if( _neighborResponses.needed() )
+            {
+                nr.push_back(_nr.t());
+                _neighborResponses.assign(nr);
+            }
+            if( _dists.needed() )
+            {
+                d.push_back(_d.t());
+                _dists.assign(d);
+            }
         }
 
         return result; // currently always 0

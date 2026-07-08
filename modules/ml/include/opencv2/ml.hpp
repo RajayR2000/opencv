@@ -256,7 +256,7 @@ public:
 
     @param filename The input file name
     @param headerLineCount The number of lines in the beginning to skip; besides the header, the
-        function also skips empty lines and lines staring with `#`
+        function also skips empty lines and lines starting with `#`
     @param responseStartIdx Index of the first output variable. If -1, the function considers the
         last variable as the response
     @param responseEndIdx Index of the last output variable + 1. If -1, then there is single
@@ -1293,6 +1293,15 @@ public:
         @param flags Flags for defining the type of RTrees.
     */
     CV_WRAP virtual void getVotes(InputArray samples, OutputArray results, int flags) const = 0;
+
+    /** Returns the OOB error value, computed at the training stage when calcOOBError is set to true.
+     * If this flag was set to false, 0 is returned. The OOB error is also scaled by sample weighting.
+     */
+#if CV_VERSION_MAJOR == 4
+    CV_WRAP virtual double getOOBError() const { return 0; }
+#else
+    /*CV_WRAP*/ virtual double getOOBError() const = 0;
+#endif
 
     /** Creates the empty model.
     Use StatModel::train to train the model, StatModel::train to create and train the model,

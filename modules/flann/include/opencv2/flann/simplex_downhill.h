@@ -1,4 +1,4 @@
-/***********************************************************************
+/*M*********************************************************************
  * Software License Agreement (BSD License)
  *
  * Copyright 2008-2009  Marius Muja (mariusm@cs.ubc.ca). All rights reserved.
@@ -72,7 +72,7 @@ float optimizeSimplexDownhill(T* points, int n, F func, float* vals = NULL )
 {
     const int MAX_ITERATIONS = 10;
 
-    assert(n>0);
+    CV_DbgAssert(n>0);
 
     T* p_o = new T[n];
     T* p_r = new T[n];

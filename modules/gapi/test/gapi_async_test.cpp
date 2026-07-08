@@ -13,6 +13,7 @@
 
 #include <condition_variable>
 #include <stdexcept>
+#include <thread>
 
 namespace opencv_test
 {
@@ -206,7 +207,7 @@ struct CallBack: crtp_cast<crtp_final_t> {
             mtx.unlock();
             cv.notify_one();
         };
-    };
+    }
 
     template<typename... Args >
     void start_async(Args&&... args){
@@ -356,7 +357,12 @@ template<typename case_t>
 struct cancel : ::testing::Test{};
 TYPED_TEST_CASE_P(cancel);
 
-TYPED_TEST_P(cancel, basic){
+TYPED_TEST_P(cancel, basic)
+{
+#if defined(__GNUC__) && __GNUC__ == 11
+    // std::vector<TypeParam> requests can't handle type with ctor parameter (SelfCanceling)
+    FAIL() << "Test code is not available due to compilation error with GCC 11";
+#else
     constexpr int num_tasks = 100;
     cancel_struct cancel_struct_ {num_tasks};
     std::vector<TypeParam> requests; requests.reserve(num_tasks);
@@ -378,6 +384,7 @@ TYPED_TEST_P(cancel, basic){
         }
     }
     ASSERT_GT(canceled, 0u);
+#endif
 }
 
 namespace {
@@ -386,13 +393,9 @@ namespace {
         for (auto&& arg : args){
             //FIXME: replace this switch with use of visit() on variant, when it will be available
             switch (arg.index()){
-    #if !defined(GAPI_STANDALONE)
-                case GRunArgP::index_of<cv::Mat*>()                 :   result.emplace_back(*util::get<cv::Mat*>(arg));     break;
-                case GRunArgP::index_of<cv::Scalar*>()              :   result.emplace_back(*util::get<cv::Scalar*>(arg));  break;
                 case GRunArgP::index_of<cv::UMat*>()                :   result.emplace_back(*util::get<cv::UMat*>(arg));    break;
-    #endif // !defined(GAPI_STANDALONE)
-                case GRunArgP::index_of<cv::gapi::own::Mat*>()      :   result.emplace_back(*util::get<cv::gapi::own::Mat*>   (arg));   break;
-                case GRunArgP::index_of<cv::gapi::own::Scalar*>()   :   result.emplace_back(*util::get<cv::gapi::own::Scalar*>(arg));   break;
+                case GRunArgP::index_of<cv::Mat*>()                 :   result.emplace_back(*util::get<cv::Mat*>(arg));     break;
+                case GRunArgP::index_of<cv::Scalar*>()              :   result.emplace_back(*util::get<cv::Scalar*>           (arg));   break;
                 case GRunArgP::index_of<cv::detail::VectorRef>()    :   result.emplace_back(util::get<cv::detail::VectorRef>  (arg));   break;
                 default : ;
             }
@@ -404,14 +407,10 @@ namespace {
         GRunArgsP result; result.reserve(args.size());
         for (auto&& arg : args){
             switch (arg.index()){
-    #if !defined(GAPI_STANDALONE)
                 case GRunArg::index_of<cv::Mat>()                 :   result.emplace_back(&util::get<cv::Mat>(arg));     break;
-                case GRunArg::index_of<cv::Scalar>()              :   result.emplace_back(&util::get<cv::Scalar>(arg));  break;
                 case GRunArg::index_of<cv::UMat>()                :   result.emplace_back(&util::get<cv::UMat>(arg));    break;
-    #endif // !defined(GAPI_STANDALONE)
-                case GRunArg::index_of<cv::gapi::own::Mat>()      :   result.emplace_back(&util::get<cv::gapi::own::Mat>   (arg));   break;
-                case GRunArg::index_of<cv::gapi::own::Scalar>()   :   result.emplace_back(&util::get<cv::gapi::own::Scalar>(arg));   break;
-                case GRunArg::index_of<cv::detail::VectorRef>()   :   result.emplace_back(util::get<cv::detail::VectorRef>  (arg));   break;
+                case GRunArg::index_of<cv::Scalar>()              :   result.emplace_back(&util::get<cv::Scalar>           (arg));   break;
+                case GRunArg::index_of<cv::detail::VectorRef>()   :   result.emplace_back(util::get<cv::detail::VectorRef> (arg));   break;
                 default : ;
             }
         }

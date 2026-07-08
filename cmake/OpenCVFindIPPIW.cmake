@@ -43,7 +43,12 @@ file(TO_CMAKE_PATH "${IPPROOT}" IPPROOT)
 
 # This function detects Intel IPP Integration Wrappers version by analyzing .h file
 macro(ippiw_setup PATH BUILD)
+  set(IPP_NEW_LAYOUT 0)
   set(FILE "${PATH}/include/iw/iw_version.h")
+  if(NOT EXISTS "${FILE}")
+    set(IPP_NEW_LAYOUT 1)
+    set(FILE "${PATH}/include/ipp/iw/iw_version.h")
+  endif()
   if(${BUILD})
     ippiw_debugmsg("Checking sources: ${PATH}")
   else()
@@ -83,7 +88,9 @@ macro(ippiw_setup PATH BUILD)
           set(IPP_IW_LIBRARY ippiw)
           set(IPP_IW_INCLUDES "${IPP_IW_PATH}/include")
           set(IPP_IW_LIBRARIES ${IPP_IW_LIBRARY})
-          execute_process(COMMAND ${CMAKE_COMMAND} -E copy_if_different "${OpenCV_SOURCE_DIR}/3rdparty/ippicv/CMakeLists.txt" "${IPP_IW_PATH}/")
+          if(NOT EXISTS "${IPP_IW_PATH}/CMakeLists.txt")
+            file(COPY "${OpenCV_SOURCE_DIR}/3rdparty/ippicv/CMakeLists.txt" DESTINATION "${IPP_IW_PATH}")
+          endif()
           add_subdirectory("${IPP_IW_PATH}/" ${OpenCV_BINARY_DIR}/3rdparty/ippiw)
 
           set(HAVE_IPP_IW 1)
@@ -97,23 +104,33 @@ macro(ippiw_setup PATH BUILD)
         endif()
       else()
         # check binaries
-        if(IPP_X64)
-          set(FILE "${PATH}/lib/intel64/${CMAKE_STATIC_LIBRARY_PREFIX}ipp_iw${CMAKE_STATIC_LIBRARY_SUFFIX}")
+        if (IPP_NEW_LAYOUT)
+          if(IPP_X64)
+            set(IW_LIB_DIR "${PATH}/lib")
+          else()
+            set(IW_LIB_DIR "${PATH}/lib32")
+          endif()
         else()
-          set(FILE "${PATH}/lib/ia32/${CMAKE_STATIC_LIBRARY_PREFIX}ipp_iw${CMAKE_STATIC_LIBRARY_SUFFIX}")
+          if(IPP_X64)
+            set(IW_LIB_DIR "${PATH}/lib/intel64")
+          else()
+            set(IW_LIB_DIR "${PATH}/lib/ia32")
+          endif()
         endif()
+        set(FILE "${IW_LIB_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}ipp_iw${CMAKE_STATIC_LIBRARY_SUFFIX}")
         if(EXISTS ${FILE})
           ippiw_debugmsg("binaries\tyes (64=${IPP_X64})")
           set(IPP_IW_PATH "${PATH}")
           message(STATUS "found Intel IPP Integration Wrappers binaries: ${IW_VERSION_MAJOR}.${IW_VERSION_MINOR}.${IW_VERSION_UPDATE}")
           message(STATUS "at: ${IPP_IW_PATH}")
 
-          add_library(ippiw STATIC IMPORTED)
-          set_target_properties(ippiw PROPERTIES
+          add_library(ipp_iw STATIC IMPORTED)
+          set_target_properties(ipp_iw PROPERTIES
             IMPORTED_LINK_INTERFACE_LIBRARIES ""
             IMPORTED_LOCATION "${FILE}"
           )
-          if (NOT BUILD_SHARED_LIBS)
+
+          if (NOT BUILD_SHARED_LIBS AND ";${OPENCV_INSTALL_EXTERNAL_DEPENDENCIES};" MATCHES ";ipp;")
             # CMake doesn't support "install(TARGETS ${name} ...)" command with imported targets
             install(FILES "${FILE}"
                     DESTINATION ${OPENCV_3P_LIB_INSTALL_PATH} COMPONENT dev)
@@ -122,7 +139,7 @@ macro(ippiw_setup PATH BUILD)
           endif()
 
           set(IPP_IW_INCLUDES "${IPP_IW_PATH}/include")
-          set(IPP_IW_LIBRARIES ippiw)
+          set(IPP_IW_LIBRARIES ipp_iw)
 
           set(HAVE_IPP_IW 1)
           set(BUILD_IPP_IW 0)

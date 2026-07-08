@@ -9,10 +9,10 @@ def help(filename):
         '''
         {0} shows the usage of the OpenCV serialization functionality. \n\n
         usage:\n
-            python3 {0} outputfile.yml.gz\n\n
-        The output file may be either in XML, YAML or JSON. You can even compress it\n
-        by specifying this in its extension like xml.gz yaml.gz etc... With\n
-        FileStorage you can serialize objects in OpenCV.\n\n
+            python3 {0} [output file name] (default outputfile.yml.gz)\n\n
+        The output file may be XML (xml), YAML (yml/yaml), or JSON (json).\n
+        You can even compress it by specifying this in its extension like xml.gz yaml.gz etc...\n
+        With FileStorage you can serialize objects in OpenCV.\n\n
         For example: - create a class and have it serialized\n
                      - use it to read and write matrices.\n
         '''.format(filename)
@@ -29,12 +29,12 @@ class MyData:
         return s
 
     ## [inside]
-    def write(self, fs):
-        fs.write('MyData','{')
+    def write(self, fs, name):
+        fs.startWriteStruct(name, cv.FileNode_MAP|cv.FileNode_FLOW)
         fs.write('A', self.A)
         fs.write('X', self.X)
         fs.write('name', self.name)
-        fs.write('MyData','}')
+        fs.endWriteStruct()
 
     def read(self, node):
         if (not node.empty()):
@@ -49,7 +49,9 @@ class MyData:
 def main(argv):
     if len(argv) != 2:
         help(argv[0])
-        exit(1)
+        filename = 'outputfile.yml.gz'
+    else :
+        filename = argv[1]
 
     # write
     ## [iomati]
@@ -59,8 +61,6 @@ def main(argv):
     ## [customIOi]
     m = MyData()
     ## [customIOi]
-
-    filename = argv[1]
 
     ## [open]
     s = cv.FileStorage(filename, cv.FileStorage_WRITE)
@@ -74,30 +74,31 @@ def main(argv):
     ## [writeNum]
 
     ## [writeStr]
-    s.write('strings', '[')
-    s.write('image1.jpg','Awesomeness')
-    s.write('../data/baboon.jpg',']')
+    s.startWriteStruct('strings', cv.FileNode_SEQ)
+    for elem in ['image1.jpg', 'Awesomeness', '../data/baboon.jpg']:
+        s.write('', elem)
+    s.endWriteStruct()
     ## [writeStr]
 
     ## [writeMap]
-    s.write ('Mapping', '{')
-    s.write ('One', 1)
-    s.write ('Two', 2)
-    s.write ('Mapping', '}')
+    s.startWriteStruct('Mapping', cv.FileNode_MAP)
+    s.write('One', 1)
+    s.write('Two', 2)
+    s.endWriteStruct()
     ## [writeMap]
 
     ## [iomatw]
-    s.write ('R_MAT', R)
-    s.write ('T_MAT', T)
+    s.write('R_MAT', R)
+    s.write('T_MAT', T)
     ## [iomatw]
 
     ## [customIOw]
-    m.write(s)
+    m.write(s, 'MyData')
     ## [customIOw]
     ## [close]
     s.release()
     ## [close]
-    print ('Write Done.')
+    print ('Write operation to file:', filename, 'completed successfully.')
 
     # read
     print ('\nReading: ')

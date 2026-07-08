@@ -28,12 +28,12 @@ namespace
     void WriteFunction(uint8_t* row, int nr, int w) {
         for (int i = 0; i < w; i++)
             row[i] = static_cast<uint8_t>(nr+i);
-    };
+    }
     void ReadFunction1x1(const uint8_t* row, int w) {
         for (int i = 0; i < w; i++)
             std::cout << std::setw(4) << static_cast<int>(row[i]) << " ";
         std::cout << "\n";
-    };
+    }
     void ReadFunction3x3(const uint8_t* rows[3], int w) {
         for (int i = 0; i < 3; i++) {
             for (int j = -1; j < w+1; j++) {
@@ -42,7 +42,7 @@ namespace
             std::cout << "\n";
         }
         std::cout << "\n";
-    };
+    }
 }
 
 TEST(FluidBuffer, InputTest)
@@ -50,7 +50,7 @@ TEST(FluidBuffer, InputTest)
     const cv::Size buffer_size = {8,8};
     cv::Mat in_mat = cv::Mat::eye(buffer_size, CV_8U);
 
-    cv::gapi::fluid::Buffer buffer(to_own(in_mat), true);
+    cv::gapi::fluid::Buffer buffer(in_mat, true);
     cv::gapi::fluid::View  view = buffer.mkView(0, false);
     view.priv().allocate(1, {});
     view.priv().reset(1);
@@ -75,7 +75,7 @@ TEST(FluidBuffer, CircularTest)
     const cv::Size buffer_size = {8,16};
 
     cv::gapi::fluid::Buffer buffer(cv::GMatDesc{CV_8U,1,buffer_size}, 3, 1, 0, 1,
-        util::make_optional(cv::gapi::fluid::Border{cv::BORDER_CONSTANT, cv::gapi::own::Scalar(255)}));
+        util::make_optional(cv::gapi::fluid::Border{cv::BORDER_CONSTANT, cv::Scalar(255)}));
     cv::gapi::fluid::View view = buffer.mkView(1, {});
     view.priv().reset(3);
     view.priv().allocate(3, {});
@@ -155,7 +155,7 @@ TEST(FluidBuffer, OutputTest)
     const cv::Size buffer_size = {8,16};
     cv::Mat out_mat = cv::Mat(buffer_size, CV_8U);
 
-    cv::gapi::fluid::Buffer buffer(to_own(out_mat), false);
+    cv::gapi::fluid::Buffer buffer(out_mat, false);
     int num_writes = 0;
     while (num_writes < buffer_size.height)
     {
@@ -754,7 +754,7 @@ TEST_P(NV12RoiTest, Test)
     auto rgb = cv::gapi::NV12toRGB(y, uv);
     cv::GComputation c(cv::GIn(y, uv), cv::GOut(rgb));
 
-    c.apply(cv::gin(y_mat, uv_mat), cv::gout(out_mat), cv::compile_args(fluidTestPackage, cv::GFluidOutputRois{{to_own(roi)}}));
+    c.apply(cv::gin(y_mat, uv_mat), cv::gout(out_mat), cv::compile_args(fluidTestPackage, cv::GFluidOutputRois{{roi}}));
 
     cv::cvtColor(in_mat, out_mat_ocv, cv::COLOR_YUV2RGB_NV12);
 
@@ -791,8 +791,15 @@ TEST(Fluid, UnusedNodeOutputCompileTest)
 TEST(Fluid, UnusedNodeOutputReshapeTest)
 {
     const auto test_size = cv::Size(8, 8);
-    const auto get_compile_args =
-        [] () { return cv::compile_args(cv::gapi::core::fluid::kernels()); };
+
+    const auto get_compile_args = [] () {
+        return cv::compile_args(
+            cv::gapi::combine(
+                cv::gapi::core::fluid::kernels(),
+                cv::gapi::imgproc::fluid::kernels()
+            )
+        );
+    };
 
     cv::GMat in;
     cv::GMat a, b, c, d;
@@ -835,7 +842,7 @@ TEST(Fluid, InvalidROIs)
     };
 
     const auto compile_args = [] (cv::Rect roi) {
-        return cv::compile_args(cv::gapi::core::fluid::kernels(), GFluidOutputRois{{to_own(roi)}});
+        return cv::compile_args(cv::gapi::core::fluid::kernels(), GFluidOutputRois{{roi}});
     };
 
     for (const auto& roi : invalid_rois)
@@ -862,11 +869,11 @@ uint64_t currMemoryConsumption()
     }
     std::string stat_line;
     std::getline(proc_stat, stat_line);
-    uint64_t unused, rss;
-    // using resident set size
-    std::istringstream(stat_line) >> unused >> rss;
-    CV_Assert(rss != 0);
-    return rss;
+    uint64_t unused, data_and_stack;
+    std::istringstream(stat_line) >> unused >> unused >> unused >> unused >> unused
+                                  >> data_and_stack;
+    CV_Assert(data_and_stack != 0);
+    return data_and_stack;
 }
 #else
 // FIXME: implement this part (at least for Windows?), right now it's enough to check Linux only

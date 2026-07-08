@@ -19,6 +19,16 @@ CV__DNN_INLINE_NS_BEGIN
 using ::google::protobuf::RepeatedField;
 using ::google::protobuf::MapPair;
 
+static Mat getTensorContentRef_(const tensorflow::TensorProto& tensor);
+static inline
+bool isAlignedMat(const Mat& m)
+{
+    int depth = m.depth();
+    int alignment = CV_ELEM_SIZE1(depth);
+    return (((size_t)m.data) & (alignment - 1)) == 0;
+}
+
+
 class TFNodeWrapper : public ImportNodeWrapper
 {
 public:
@@ -31,7 +41,10 @@ public:
 
     virtual std::string getInputName(int idx) const CV_OVERRIDE
     {
-        return node->input(idx);
+        // If operation produces several tensors, they are specified by index
+        // after ':' character. In example, "input:0".
+        std::string name = node->input(idx);
+        return name.substr(0, name.rfind(':'));
     }
 
     virtual std::string getType() const CV_OVERRIDE
@@ -83,6 +96,14 @@ public:
     virtual void removeNode(int idx) CV_OVERRIDE
     {
         net.mutable_node()->DeleteSubrange(idx, 1);
+    }
+
+    virtual inline bool isCommutativeOp(const std::string& type) const CV_OVERRIDE
+    {
+        return type == "Add" || type == "Sum" ||
+               type == "Mul" || type == "Prod" ||
+               type == "Max" || type == "Maximum" || type == "Minimum" ||
+               type == "Mean" || type == "SquaredDifference";
     }
 
     tensorflow::GraphDef& net;
@@ -223,6 +244,26 @@ public:
     }
 };
 
+class FlattenProdSubgraph : public Subgraph
+{
+public:
+    FlattenProdSubgraph()
+    {
+        int input = addNodeToMatch("");
+        int shape = addNodeToMatch("Shape", input);
+        int stack = addNodeToMatch("Const");
+        int stack_1 = addNodeToMatch("Const");
+        int stack_2 = addNodeToMatch("Const");
+        int strided_slice = addNodeToMatch("StridedSlice", shape, stack, stack_1, stack_2);
+        int prod = addNodeToMatch("Prod", strided_slice, addNodeToMatch("Const"));
+        int shape_pack = addNodeToMatch("Const");
+        int pack = addNodeToMatch("Pack", shape_pack, prod);
+        addNodeToMatch("Reshape", input, pack);
+
+        setFusedNode("Flatten", input);
+    }
+};
+
 // K.layers.Softmax
 class SoftMaxKerasSubgraph : public Subgraph
 {
@@ -249,24 +290,26 @@ public:
     {
         int input = addNodeToMatch("");
         int relu = addNodeToMatch("Relu", input);
-        int maxValue = addNodeToMatch("Const");
+        maxValueId = addNodeToMatch("Const");
         int clipValue = addNodeToMatch("Const");
-        int minimum = addNodeToMatch("Minimum", relu, maxValue);
+        int minimum = addNodeToMatch("Minimum", relu, maxValueId);
         addNodeToMatch("Maximum", minimum, clipValue);
 
         setFusedNode("Relu6", input);
     }
 
     virtual bool match(const Ptr<ImportGraphWrapper>& net, int nodeId,
-                       std::vector<int>& matchedNodesIds,
-                       std::vector<int>& targetNodesIds) CV_OVERRIDE
+                       std::vector<int>& matchedNodesIds) CV_OVERRIDE
     {
-        if (!Subgraph::match(net, nodeId, matchedNodesIds, targetNodesIds))
+        if (!Subgraph::match(net, nodeId, matchedNodesIds))
             return false;
-        tensorflow::NodeDef* node = net->getNode(matchedNodesIds.front() + 1).dynamicCast<TFNodeWrapper>()->node;
+        tensorflow::NodeDef* node = net->getNode(matchedNodesIds[maxValueId]).dynamicCast<TFNodeWrapper>()->node;
         Mat maxValue = getTensorContent(node->attr().at("value").tensor());
         return maxValue.type() == CV_32FC1 && maxValue.total() == 1 && maxValue.at<float>(0) == 6;
     }
+
+private:
+    int maxValueId;
 };
 
 // Keras' reshape stores output shape in separate Const nodes by one value.
@@ -295,15 +338,14 @@ public:
     }
 
     virtual bool match(const Ptr<ImportGraphWrapper>& net, int nodeId,
-                       std::vector<int>& matchedNodesIds,
-                       std::vector<int>& targetNodesIds) CV_OVERRIDE
+                       std::vector<int>& matchedNodesIds) CV_OVERRIDE
     {
         Ptr<ImportNodeWrapper> node = net->getNode(nodeId);
         if (node->getNumInputs() == 0)
             return false;
 
         inpName = node->getInputName(0);
-        return Subgraph::match(net, nodeId, matchedNodesIds, targetNodesIds);
+        return Subgraph::match(net, nodeId, matchedNodesIds);
     }
 
 
@@ -475,8 +517,9 @@ public:
     ResizeBilinearSubgraph()
     {
         int input = addNodeToMatch("");
+        int shapeSource = addNodeToMatch("");
 
-        int shape = addNodeToMatch("Shape", input);
+        int shape = addNodeToMatch("Shape", shapeSource);
         int stack = addNodeToMatch("Const");
         int stack_1 = addNodeToMatch("Const");
         int stack_2 = addNodeToMatch("Const");
@@ -484,7 +527,7 @@ public:
         int factorY = addNodeToMatch("Const");
         int mul = addNodeToMatch("Mul", strided_slice, factorY);
 
-        shape = addNodeToMatch("Shape", input);
+        shape = addNodeToMatch("Shape", shapeSource);
         stack = addNodeToMatch("Const");
         stack_1 = addNodeToMatch("Const");
         stack_2 = addNodeToMatch("Const");
@@ -496,6 +539,51 @@ public:
 
         addNodeToMatch("ResizeBilinear", input, pack);
         setFusedNode("ResizeBilinear", input, factorY, factorX);
+    }
+};
+
+// In case of resizing by factor.
+class ResizeBilinearSubgraphDown : public TFSubgraph
+{
+public:
+    ResizeBilinearSubgraphDown()
+    {
+        int input = addNodeToMatch("");
+        int shapeSource = addNodeToMatch("");
+
+        int shape = addNodeToMatch("Shape", shapeSource);
+        int stack = addNodeToMatch("Const");
+        int stack_1 = addNodeToMatch("Const");
+        int stack_2 = addNodeToMatch("Const");
+        int strided_slice = addNodeToMatch("StridedSlice", shape, stack, stack_1, stack_2);
+        int factorY = addNodeToMatch("Const");
+        int div = addNodeToMatch("RealDiv", addNodeToMatch("Cast", strided_slice), factorY);
+        int cast = addNodeToMatch("Cast", div);
+
+        shape = addNodeToMatch("Shape", shapeSource);
+        stack = addNodeToMatch("Const");
+        stack_1 = addNodeToMatch("Const");
+        stack_2 = addNodeToMatch("Const");
+        strided_slice = addNodeToMatch("StridedSlice", shape, stack, stack_1, stack_2);
+        int factorX = addNodeToMatch("Const");
+        int div_1 = addNodeToMatch("RealDiv", addNodeToMatch("Cast", strided_slice), factorX);
+        int cast_1 = addNodeToMatch("Cast", div_1);
+
+        int pack = addNodeToMatch("Pack", cast, cast_1);
+
+        addNodeToMatch("ResizeBilinear", input, pack);
+        setFusedNode("ResizeBilinear", input, factorY, factorX);
+    }
+
+    virtual void finalize(tensorflow::GraphDef&, tensorflow::NodeDef* fusedNode,
+                          std::vector<tensorflow::NodeDef*>& inputNodes) CV_OVERRIDE
+    {
+
+        for (int i = 1; i < 3; ++i)
+        {
+            tensorflow::TensorProto* factor = inputNodes[i]->mutable_attr()->at("value").mutable_tensor();
+            factor->set_double_val(0, 1.0 / factor->double_val(0));
+        }
     }
 };
 
@@ -629,6 +717,62 @@ public:
     }
 };
 
+class PReLUSubgraph : public TFSubgraph
+{
+public:
+    PReLUSubgraph(bool negativeScales_) : negativeScales(negativeScales_)
+    {
+        int input = addNodeToMatch("");
+        int scales = addNodeToMatch("Const");
+        int neg = addNodeToMatch("Neg", input);
+        int relu_neg = addNodeToMatch("Relu", neg);
+        int finalScales = negativeScales ? addNodeToMatch("Neg", scales) : scales;
+        int mul = addNodeToMatch("Mul", finalScales, relu_neg);
+        int relu_pos = addNodeToMatch("Relu", input);
+        addNodeToMatch("Add", relu_pos, mul);
+        setFusedNode("PReLU", input, scales);
+    }
+
+    virtual void finalize(tensorflow::GraphDef&, tensorflow::NodeDef* fusedNode,
+                          std::vector<tensorflow::NodeDef*>& inputNodes) CV_OVERRIDE
+    {
+        if (!negativeScales)
+        {
+            Mat scalesRef = getTensorContentRef_(inputNodes[1]->attr().at("value").tensor());
+            // FIXME: This breaks the const guarantees of tensor() by writing to scalesRef
+            if (isAlignedMat(scalesRef))
+            {
+                scalesRef *= -1;
+            }
+            else
+            {
+                Mat scales = scalesRef.clone() * -1;
+                CV_Assert(scalesRef.isContinuous());
+                CV_Assert(scales.isContinuous());
+                memcpy(scalesRef.data, scales.data, scales.total() * scales.elemSize());
+            }
+        }
+    }
+
+private:
+    bool negativeScales;
+};
+
+class ClipByValueSubgraph : public TFSubgraph
+{
+public:
+    ClipByValueSubgraph()
+    {
+        int input = addNodeToMatch("");
+        int maxValue = addNodeToMatch("Const");
+        int minimum = addNodeToMatch("Minimum", input, maxValue);
+        int minValue = addNodeToMatch("Const");
+        addNodeToMatch("Maximum", minimum, minValue);
+
+        setFusedNode("ClipByValue", input, minValue, maxValue);
+    }
+};
+
 void simplifySubgraphs(tensorflow::GraphDef& net)
 {
     std::vector<Ptr<Subgraph> > subgraphs;
@@ -649,6 +793,18 @@ void simplifySubgraphs(tensorflow::GraphDef& net)
     subgraphs.push_back(Ptr<Subgraph>(new SoftMaxSlimV2Subgraph()));
     subgraphs.push_back(Ptr<Subgraph>(new ReshapeAsShapeSubgraph()));
     subgraphs.push_back(Ptr<Subgraph>(new KerasMVNSubgraph()));
+    subgraphs.push_back(Ptr<Subgraph>(new PReLUSubgraph(true)));
+    subgraphs.push_back(Ptr<Subgraph>(new PReLUSubgraph(false)));
+    subgraphs.push_back(Ptr<Subgraph>(new FlattenProdSubgraph()));
+    subgraphs.push_back(Ptr<Subgraph>(new ResizeBilinearSubgraphDown()));
+    subgraphs.push_back(Ptr<Subgraph>(new ClipByValueSubgraph()));
+
+    for (int i = 0; i < net.node_size(); ++i)
+    {
+        tensorflow::NodeDef* layer = net.mutable_node(i);
+        if (layer->op() == "AddV2")
+            layer->set_op("Add");
+    }
 
     simplifySubgraphs(Ptr<ImportGraphWrapper>(new TFGraphWrapper(net)), subgraphs);
 }
@@ -668,6 +824,7 @@ void RemoveIdentityOps(tensorflow::GraphDef& net)
 
         if (type == "Identity" || type == "Dropout" || type == "PlaceholderWithDefault") {
             identity_ops_idx.push_back(li);
+            CV_Assert(layer.input_size() != 0);
             identity_ops[layer.name()] = layer.input(0);
         }
     }
@@ -682,6 +839,22 @@ void RemoveIdentityOps(tensorflow::GraphDef& net)
             IdentityOpsMap::iterator it = identity_ops.find(input_op_name);
 
             if (it != identity_ops.end()) {
+                std::set<String> loopCheckSet;
+                // In case of Identity after Identity
+                while (true)
+                {
+                    IdentityOpsMap::iterator nextIt = identity_ops.find(it->second);
+                    if (nextIt != identity_ops.end())
+                    {
+                        // Loop check
+                        if (loopCheckSet.find(it->second) != loopCheckSet.end())
+                            CV_Error(Error::StsError, "Found a loop in your input Tensorflow model, which is illegal!");
+                        loopCheckSet.insert(it->second);
+                        it = nextIt;
+                    }
+                    else
+                        break;
+                }
                 layer->set_input(input_id, it->second);
             }
         }
@@ -697,7 +870,8 @@ void RemoveIdentityOps(tensorflow::GraphDef& net)
     }
 }
 
-Mat getTensorContent(const tensorflow::TensorProto &tensor, bool copy)
+// NB: returned Mat::data pointer may be unaligned
+Mat getTensorContentRef_(const tensorflow::TensorProto& tensor)
 {
     const std::string& content = tensor.tensor_content();
     Mat m;
@@ -741,22 +915,22 @@ Mat getTensorContent(const tensorflow::TensorProto &tensor, bool copy)
         }
         case tensorflow::DT_HALF:
         {
-            Mat halfs;
             if (!content.empty())
             {
                 static const int kHalfSize = 2;
-                halfs = Mat(1, content.size() / kHalfSize, CV_16UC1, (void*)content.c_str());
+                Mat halfs(1, content.size() / kHalfSize, CV_16FC1, (void*)content.c_str());
+                halfs.convertTo(m, CV_32F);
             }
             else
             {
                 const RepeatedField<int32_t>& field = tensor.half_val();
                 CV_Assert(!field.empty());
                 Mat ints(1, field.size(), CV_32SC1, (void*)field.data());
+                Mat halfs;
                 ints.convertTo(halfs, CV_16UC1);
+                Mat halfsSigned(halfs.size(), CV_16FC1, halfs.data);
+                halfsSigned.convertTo(m, CV_32F);
             }
-            // Reinterpret as a signed shorts just for a convertFp16 call.
-            Mat halfsSigned(halfs.size(), CV_16SC1, halfs.data);
-            convertFp16(halfsSigned, m);
             break;
         }
         case tensorflow::DT_QUINT8:
@@ -769,7 +943,18 @@ Mat getTensorContent(const tensorflow::TensorProto &tensor, bool copy)
             CV_Error(Error::StsError, "Tensor's data type is not supported");
             break;
     }
-    return copy ? m.clone() : m;
+
+    return m;
+}
+
+Mat getTensorContent(const tensorflow::TensorProto& tensor, bool forceCopy)
+{
+    // If necessary clone m to have aligned data pointer
+    Mat m = getTensorContentRef_(tensor);
+    if (forceCopy || !isAlignedMat(m))
+        return m.clone();
+    else
+        return m;
 }
 
 void releaseTensor(tensorflow::TensorProto* tensor)
@@ -822,6 +1007,7 @@ void sortByExecutionOrder(tensorflow::GraphDef& net)
         nodesMap.insert(std::make_pair(node.name(), i));
     }
 
+    CV_CheckEQ(nodesMap.size(), (size_t)net.node_size(), "Node names must be unique");
     // Indices of nodes which use specific node as input.
     std::vector<std::vector<int> > edges(nodesMap.size());
     std::vector<int> numRefsToAdd(nodesMap.size(), 0);
@@ -839,7 +1025,7 @@ void sortByExecutionOrder(tensorflow::GraphDef& net)
             nodesMapIt = nodesMap.find(inpName);
             if (nodesMapIt != nodesMap.end())
             {
-                edges[nodesMapIt->second].push_back(i);
+                edges.at(nodesMapIt->second).push_back(i);
                 numInputsInGraph += 1;
             }
         }
@@ -847,15 +1033,15 @@ void sortByExecutionOrder(tensorflow::GraphDef& net)
             nodesToAdd.push_back(i);
         else
         {
-            if (node.op() == "Merge" || node.op() == "RefMerge")
+            if (node.op() == "Merge" || node.op() == "RefMerge" || node.op() == "NoOp")
             {
                 int numControlEdges = 0;
                 for (int j = 0; j < numInputsInGraph; ++j)
-                    numControlEdges += node.input(j)[0] == '^';
-                numRefsToAdd[i] = numControlEdges + 1;
+                    numControlEdges += node.input(j).at(0) == '^';
+                numRefsToAdd.at(i) = numControlEdges + 1;
             }
             else
-                numRefsToAdd[i] = numInputsInGraph;
+                numRefsToAdd.at(i) = numInputsInGraph;
         }
     }
 
@@ -867,17 +1053,16 @@ void sortByExecutionOrder(tensorflow::GraphDef& net)
         nodesToAdd.pop_back();
 
         permIds.push_back(nodeToAdd);
-
-        for (int i = 0; i < edges[nodeToAdd].size(); ++i)
+        for (int i = 0; i < edges.at(nodeToAdd).size(); ++i)
         {
-            int consumerId = edges[nodeToAdd][i];
-            if (numRefsToAdd[consumerId] > 0)
+            int consumerId = edges.at(nodeToAdd).at(i);
+            if (numRefsToAdd.at(consumerId) > 0)
             {
-                if (numRefsToAdd[consumerId] == 1)
+                if (numRefsToAdd.at(consumerId) == 1)
                     nodesToAdd.push_back(consumerId);
                 else
-                    CV_Assert(numRefsToAdd[consumerId] >= 0);
-                numRefsToAdd[consumerId] -= 1;
+                    CV_Assert(numRefsToAdd.at(consumerId) >= 0);
+                numRefsToAdd.at(consumerId) -= 1;
             }
         }
     }
@@ -896,7 +1081,7 @@ void removePhaseSwitches(tensorflow::GraphDef& net)
     {
         const tensorflow::NodeDef& node = net.node(i);
         nodesMap.insert(std::make_pair(node.name(), i));
-        if (node.op() == "Switch" || node.op() == "Merge")
+        if (node.op() == "Switch" || node.op() == "Merge" || node.op() == "NoOp")
         {
             CV_Assert(node.input_size() > 0);
             // Replace consumers' inputs.
@@ -914,7 +1099,7 @@ void removePhaseSwitches(tensorflow::GraphDef& net)
                 }
             }
             nodesToRemove.push_back(i);
-            if (node.op() == "Merge" || node.op() == "Switch")
+            if (node.op() == "Merge" || node.op() == "Switch" || node.op() == "NoOp")
                 mergeOpSubgraphNodes.push(i);
         }
     }
@@ -944,15 +1129,16 @@ void removePhaseSwitches(tensorflow::GraphDef& net)
             inpName = inpName.substr(1 + (int)inpName.find('^'), inpName.rfind(':'));
             nodesMapIt = nodesMap.find(inpName);
             CV_Assert(nodesMapIt != nodesMap.end());
-
             int inpNodeId = nodesMapIt->second;
+
+            CV_CheckGT(numConsumers[inpNodeId], 0,
+                       "Input node of the current node should have at least one output node");
             if (numConsumers[inpNodeId] == 1)
             {
                 mergeOpSubgraphNodes.push(inpNodeId);
                 nodesToRemove.push_back(inpNodeId);
             }
-            else if (numConsumers[inpNodeId] > 0)
-                numConsumers[inpNodeId] -= 1;
+            numConsumers[inpNodeId] -= 1;
         }
     }
     std::sort(nodesToRemove.begin(), nodesToRemove.end());

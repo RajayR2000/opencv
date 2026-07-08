@@ -158,7 +158,7 @@ public:
         float* psamples = samples.ptr<float>();
         size_t sstep0 = samples.step1(), sstep1 = 1;
         Mat sample0, sample(nallvars, 1, CV_32F, &samplebuf[0]);
-        int predictFlags = _isClassifier ? (PREDICT_MAX_VOTE + RAW_OUTPUT) : PREDICT_SUM;
+        int predictFlags = _isClassifier ? (+PREDICT_MAX_VOTE + RAW_OUTPUT) : PREDICT_SUM;
 
         bool calcOOBError = eps > 0 || rparams.calcVarImportance;
         double max_response = 0.;
@@ -216,13 +216,14 @@ public:
                     sample = Mat( nallvars, 1, CV_32F, psamples + sstep0*w->sidx[j], sstep1*sizeof(psamples[0]) );
 
                     double val = predictTrees(Range(treeidx, treeidx+1), sample, predictFlags);
+                    double sample_weight = w->sample_weights[w->sidx[j]];
                     if( !_isClassifier )
                     {
                         oobres[j] += val;
                         oobcount[j]++;
                         double true_val = w->ord_responses[w->sidx[j]];
                         double a = oobres[j]/oobcount[j] - true_val;
-                        oobError += a*a;
+                        oobError += sample_weight * a*a;
                         val = (val - true_val)/max_response;
                         ncorrect_responses += std::exp( -val*val );
                     }
@@ -237,7 +238,7 @@ public:
                             if( votes[best_class] < votes[k] )
                                 best_class = k;
                         int diff = best_class != w->cat_responses[w->sidx[j]];
-                        oobError += diff;
+                        oobError += sample_weight * diff;
                         ncorrect_responses += diff == 0;
                     }
                 }
@@ -308,7 +309,7 @@ public:
     {
         CV_TRACE_FUNCTION();
         if( roots.empty() )
-            CV_Error( CV_StsBadArg, "RTrees have not been trained" );
+            CV_Error( cv::Error::StsBadArg, "RTrees have not been trained" );
 
         writeFormat(fs);
         writeParams(fs);
@@ -387,9 +388,10 @@ public:
             results = output.getMat();
             for( i = 0; i < nsamples; i++ )
             {
+                const Mat sampleRow = samples.row(i);
                 for( j = 0; j < ntrees; j++ )
                 {
-                    float val = predictTrees( Range(j, j+1), samples.row(i), flags);
+                    float val = predictTrees( Range(j, j+1), sampleRow, flags);
                     results.at<float> (i, j) = val;
                 }
             }
@@ -407,9 +409,10 @@ public:
             for( i = 0; i < nsamples; i++ )
             {
                 votes.clear();
+                const Mat sampleRow = samples.row(i);
                 for( j = 0; j < ntrees; j++ )
                 {
-                    int val = (int)predictTrees( Range(j, j+1), samples.row(i), flags);
+                    int val = (int)predictTrees( Range(j, j+1), sampleRow, flags);
                     votes.push_back(val);
                 }
 
@@ -419,6 +422,10 @@ public:
                 }
             }
         }
+    }
+
+    double getOOBError() const {
+        return oobError;
     }
 
     RTreeParams rparams;
@@ -475,6 +482,7 @@ public:
     float predict( InputArray samples, OutputArray results, int flags ) const CV_OVERRIDE
     {
         CV_TRACE_FUNCTION();
+        CV_CheckEQ(samples.cols(), getVarCount(), "");
         return impl.predict(samples, results, flags);
     }
 
@@ -500,6 +508,8 @@ public:
     const vector<Node>& getNodes() const CV_OVERRIDE { return impl.getNodes(); }
     const vector<Split>& getSplits() const CV_OVERRIDE { return impl.getSplits(); }
     const vector<int>& getSubsets() const CV_OVERRIDE { return impl.getSubsets(); }
+    double getOOBError() const CV_OVERRIDE { return impl.getOOBError(); }
+
 
     DTreesImplForRTrees impl;
 };

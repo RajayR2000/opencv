@@ -9,7 +9,6 @@
 #ifdef HAVE_INF_ENGINE
 #include <opencv2/core/utils/filesystem.hpp>
 
-
 //
 // Synchronize headers include statements with src/op_inf_engine.hpp
 //
@@ -26,14 +25,11 @@
 #pragma GCC visibility push(default)
 #endif
 
-#include <inference_engine.hpp>
-#include <ie_icnn_network.hpp>
-#include <ie_extension.h>
-
 #if defined(__GNUC__)
 #pragma GCC visibility pop
 #endif
 
+#include <openvino/runtime/core.hpp>
 
 namespace opencv_test { namespace {
 
@@ -44,15 +40,11 @@ static void initDLDTDataPath()
     if (!initialized)
     {
 #if INF_ENGINE_RELEASE <= 2018050000
-        const char* dldtTestDataPath = getenv("INTEL_CVSDK_DIR");
-        if (dldtTestDataPath)
-            cvtest::addDataSearchPath(dldtTestDataPath);
+        cvtest::addDataSearchEnv("INTEL_CVSDK_DIR");
 #else
-        const char* omzDataPath = getenv("OPENCV_OPEN_MODEL_ZOO_DATA_PATH");
-        if (omzDataPath)
-            cvtest::addDataSearchPath(omzDataPath);
-        const char* dnnDataPath = getenv("OPENCV_DNN_TEST_DATA_PATH");
-        if (dnnDataPath)
+        cvtest::addDataSearchEnv("OPENCV_OPEN_MODEL_ZOO_DATA_PATH");
+        const std::string dnnDataPath = cv::utils::getConfigurationParameterString("OPENCV_DNN_TEST_DATA_PATH");
+        if (!dnnDataPath.empty())
             cvtest::addDataSearchPath(std::string(dnnDataPath) + "/omz_intel_models");
 #endif
         initialized = true;
@@ -62,7 +54,6 @@ static void initDLDTDataPath()
 
 using namespace cv;
 using namespace cv::dnn;
-using namespace InferenceEngine;
 
 struct OpenVINOModelTestCaseInfo
 {
@@ -73,7 +64,8 @@ struct OpenVINOModelTestCaseInfo
 static const std::map<std::string, OpenVINOModelTestCaseInfo>& getOpenVINOTestModels()
 {
     static std::map<std::string, OpenVINOModelTestCaseInfo> g_models {
-#if INF_ENGINE_RELEASE >= 2018050000
+#if INF_ENGINE_RELEASE >= 2018050000 && \
+    INF_ENGINE_RELEASE <= 2020999999  // don't use IRv5 models with 2020.1+
         // layout is defined by open_model_zoo/model_downloader
         // Downloaded using these parameters for Open Model Zoo downloader (2019R1):
         // ./downloader.py -o ${OPENCV_DNN_TEST_DATA_PATH}/omz_intel_models --cache_dir ${OPENCV_DNN_TEST_DATA_PATH}/.omz_cache/ \
@@ -102,10 +94,14 @@ static const std::map<std::string, OpenVINOModelTestCaseInfo>& getOpenVINOTestMo
 #if INF_ENGINE_RELEASE >= 2020010000
         // Downloaded using these parameters for Open Model Zoo downloader (2020.1):
         // ./downloader.py -o ${OPENCV_DNN_TEST_DATA_PATH}/omz_intel_models --cache_dir ${OPENCV_DNN_TEST_DATA_PATH}/.omz_cache/ \
-        //     --name person-detection-retail-0013
+        //     --name person-detection-retail-0013,age-gender-recognition-retail-0013
         { "person-detection-retail-0013", {  // IRv10
             "intel/person-detection-retail-0013/FP32/person-detection-retail-0013",
             "intel/person-detection-retail-0013/FP16/person-detection-retail-0013"
+        }},
+        { "age-gender-recognition-retail-0013", {
+            "intel/age-gender-recognition-retail-0013/FP16/age-gender-recognition-retail-0013",
+            "intel/age-gender-recognition-retail-0013/FP32/age-gender-recognition-retail-0013"
         }},
 #endif
     };
@@ -122,34 +118,34 @@ static const std::vector<std::string> getOpenVINOTestModelsList()
     return result;
 }
 
-static inline void genData(const InferenceEngine::TensorDesc& desc, Mat& m, Blob::Ptr& dataPtr)
+inline static std::string getOpenVINOModel(const std::string &modelName, bool isFP16)
 {
-    const std::vector<size_t>& dims = desc.getDims();
-    m.create(std::vector<int>(dims.begin(), dims.end()), CV_32F);
-    randu(m, -1, 1);
-
-    dataPtr = make_shared_blob<float>(desc, (float*)m.data);
+    const std::map<std::string, OpenVINOModelTestCaseInfo>& models = getOpenVINOTestModels();
+    const auto it = models.find(modelName);
+    if (it != models.end())
+    {
+        OpenVINOModelTestCaseInfo modelInfo = it->second;
+        if (isFP16 && modelInfo.modelPathFP16)
+            return std::string(modelInfo.modelPathFP16);
+        else if (!isFP16 && modelInfo.modelPathFP32)
+            return std::string(modelInfo.modelPathFP32);
+    }
+    return std::string();
 }
 
 void runIE(Target target, const std::string& xmlPath, const std::string& binPath,
            std::map<std::string, cv::Mat>& inputsMap, std::map<std::string, cv::Mat>& outputsMap)
 {
-    CNNNetReader reader;
-    reader.ReadNetwork(xmlPath);
-    reader.ReadWeights(binPath);
-
-    CNNNetwork net = reader.getNetwork();
+    SCOPED_TRACE("runIE");
 
     std::string device_name;
 
-#if defined(INF_ENGINE_RELEASE) && INF_ENGINE_VER_MAJOR_GT(2019010000)
-    Core ie;
-#else
-    InferenceEnginePluginPtr enginePtr;
-    InferencePlugin plugin;
-#endif
-    ExecutableNetwork netExec;
-    InferRequest infRequest;
+    ov::Core core;
+
+    auto model = core.read_model(xmlPath, binPath);
+
+    ov::CompiledModel compiledModel;
+    ov::InferRequest infRequest;
 
     try
     {
@@ -172,10 +168,6 @@ void runIE(Target target, const std::string& xmlPath, const std::string& binPath
                 CV_Error(Error::StsNotImplemented, "Unknown target");
         };
 
-#if defined(INF_ENGINE_RELEASE) && INF_ENGINE_VER_MAJOR_LE(2019010000)
-        auto dispatcher = InferenceEngine::PluginDispatcher({""});
-        enginePtr = dispatcher.getPluginByDevice(device_name);
-#endif
         if (target == DNN_TARGET_CPU || target == DNN_TARGET_FPGA)
         {
             std::string suffixes[] = {"_avx2", "_sse4", ""};
@@ -197,56 +189,103 @@ void runIE(Target target, const std::string& xmlPath, const std::string& binPath
 #endif  // _WIN32
                 try
                 {
-                    IExtensionPtr extension = make_so_pointer<IExtension>(libName);
-#if defined(INF_ENGINE_RELEASE) && INF_ENGINE_VER_MAJOR_GT(2019010000)
-                    ie.AddExtension(extension, device_name);
-#else
-                    enginePtr->AddExtension(extension, 0);
-#endif
+                    core.add_extension(libName);
                     break;
                 }
                 catch(...) {}
             }
             // Some of networks can work without a library of extra layers.
         }
-#if defined(INF_ENGINE_RELEASE) && INF_ENGINE_VER_MAJOR_GT(2019010000)
-        netExec = ie.LoadNetwork(net, device_name);
-#else
-        plugin = InferencePlugin(enginePtr);
-        netExec = plugin.LoadNetwork(net, {});
-#endif
-        infRequest = netExec.CreateInferRequest();
+        compiledModel = core.compile_model(model, device_name);
+        infRequest = compiledModel.create_infer_request();
     }
     catch (const std::exception& ex)
     {
         CV_Error(Error::StsAssert, format("Failed to initialize Inference Engine backend: %s", ex.what()));
     }
 
-    // Fill input blobs.
+    // Fill input tensors.
     inputsMap.clear();
-    BlobMap inputBlobs;
-    for (auto& it : net.getInputsInfo())
+    for (auto&& it : model->inputs())
     {
-        genData(it.second->getTensorDesc(), inputsMap[it.first], inputBlobs[it.first]);
-    }
-    infRequest.SetInput(inputBlobs);
+        auto type = it.get_element_type();
+        auto shape_ = it.get_partial_shape();
+        if (shape_.is_dynamic())
+        {
+            FAIL() << "Model should not have dynamic shapes (" << it.get_any_name() << " => " << shape_ << ")";
+        }
+        auto shape = shape_.to_shape();
+        auto& m = inputsMap[it.get_any_name()];
 
-    // Fill output blobs.
+        auto tensor = ov::Tensor(type, shape);
+        if (type == ov::element::f32)
+        {
+            m.create(std::vector<int>(shape.begin(), shape.end()), CV_32F);
+            randu(m, -1, 1);
+        }
+        else if (type == ov::element::i32)
+        {
+            m.create(std::vector<int>(shape.begin(), shape.end()), CV_32S);
+            randu(m, -100, 100);
+        }
+        else
+        {
+            FAIL() << "Unsupported precision: " << type;
+        }
+        std::memcpy(tensor.data(), m.data, tensor.get_byte_size());
+
+        if (cvtest::debugLevel > 0)
+        {
+            std::cout << "Input: '" << it.get_any_name() << "' precision=" << type << " dims=" << shape << " [";
+            for (auto d : shape)
+                std::cout << " " << d;
+            std::cout << "]  ocv_mat=" << inputsMap[it.get_any_name()].size << " of " << typeToString(inputsMap[it.get_any_name()].type()) << std::endl;
+        }
+        infRequest.set_tensor(it, tensor);
+    }
+    infRequest.infer();
+
+
+    // Fill output tensors.
     outputsMap.clear();
-    BlobMap outputBlobs;
-    for (auto& it : net.getOutputsInfo())
+    for (const auto& it : model->outputs())
     {
-        genData(it.second->getTensorDesc(), outputsMap[it.first], outputBlobs[it.first]);
-    }
-    infRequest.SetOutput(outputBlobs);
+        auto type = it.get_element_type();
+        auto& m = outputsMap[it.get_any_name()];
 
-    infRequest.Infer();
+        auto tensor = infRequest.get_tensor(it);
+        auto shape = tensor.get_shape();
+        if (type == ov::element::f32)
+        {
+            m.create(std::vector<int>(shape.begin(), shape.end()), CV_32F);
+        }
+        else if (type == ov::element::i32)
+        {
+            m.create(std::vector<int>(shape.begin(), shape.end()), CV_32S);
+        }
+        else
+        {
+            FAIL() << "Unsupported precision: " << type;
+        }
+        std::memcpy(m.data, tensor.data(), tensor.get_byte_size());
+
+        if (cvtest::debugLevel > 0)
+        {
+            std::cout << "Output: '" << it.get_any_name() << "' precision=" << type << " dims=" << shape << " [";
+            for (auto d : shape)
+                std::cout << " " << d;
+            std::cout << "]  ocv_mat=" << outputsMap[it.get_any_name()].size << " of " << typeToString(outputsMap[it.get_any_name()].type()) << std::endl;
+        }
+
+    }
 }
 
 void runCV(Backend backendId, Target targetId, const std::string& xmlPath, const std::string& binPath,
            const std::map<std::string, cv::Mat>& inputsMap,
            std::map<std::string, cv::Mat>& outputsMap)
 {
+    SCOPED_TRACE("runOCV");
+
     Net net = readNet(xmlPath, binPath);
     for (auto& it : inputsMap)
         net.setInput(it.second, it.first);
@@ -255,6 +294,12 @@ void runCV(Backend backendId, Target targetId, const std::string& xmlPath, const
     net.setPreferableTarget(targetId);
 
     std::vector<String> outNames = net.getUnconnectedOutLayersNames();
+    if (cvtest::debugLevel > 0)
+    {
+        std::cout << "OpenCV output names: " << outNames.size() << std::endl;
+        for (auto name : outNames)
+            std::cout << "- " << name << std::endl;
+    }
     std::vector<Mat> outs;
     net.forward(outs, outNames);
 
@@ -273,25 +318,39 @@ TEST_P(DNNTestOpenVINO, models)
 
     const Backend backendId = get<0>(get<0>(GetParam()));
     const Target targetId = get<1>(get<0>(GetParam()));
-
-    if (backendId != DNN_BACKEND_INFERENCE_ENGINE_NN_BUILDER_2019 && backendId != DNN_BACKEND_INFERENCE_ENGINE_NGRAPH)
-        throw SkipTestException("No support for async forward");
-
-    if (backendId == DNN_BACKEND_INFERENCE_ENGINE_NN_BUILDER_2019)
-        setInferenceEngineBackendType(CV_DNN_BACKEND_INFERENCE_ENGINE_NN_BUILDER_API);
-    else if (backendId == DNN_BACKEND_INFERENCE_ENGINE_NGRAPH)
-        setInferenceEngineBackendType(CV_DNN_BACKEND_INFERENCE_ENGINE_NGRAPH);
-    else
-        FAIL() << "Unknown backendId";
-
     std::string modelName = get<1>(GetParam());
+
+    ASSERT_FALSE(backendId != DNN_BACKEND_INFERENCE_ENGINE_NN_BUILDER_2019 && backendId != DNN_BACKEND_INFERENCE_ENGINE_NGRAPH) <<
+        "Inference Engine backend is required";
+
+#if INF_ENGINE_VER_MAJOR_GE(2021030000)
+    if (targetId == DNN_TARGET_MYRIAD && (false
+            || modelName == "person-detection-retail-0013"  // ncDeviceOpen:1013 Failed to find booted device after boot
+            || modelName == "age-gender-recognition-retail-0013"  // ncDeviceOpen:1013 Failed to find booted device after boot
+        )
+    )
+        applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_MYRIAD, CV_TEST_TAG_DNN_SKIP_IE_NGRAPH, CV_TEST_TAG_DNN_SKIP_IE_VERSION);
+#endif
+
+#if INF_ENGINE_VER_MAJOR_GE(2020020000)
+    if (targetId == DNN_TARGET_MYRIAD && backendId == DNN_BACKEND_INFERENCE_ENGINE_NN_BUILDER_2019)
+    {
+        if (modelName == "person-detection-retail-0013")  // IRv10
+            applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_MYRIAD, CV_TEST_TAG_DNN_SKIP_IE_NN_BUILDER, CV_TEST_TAG_DNN_SKIP_IE_VERSION);
+    }
+#endif
+
+#if INF_ENGINE_VER_MAJOR_EQ(2020040000)
+    if (targetId == DNN_TARGET_MYRIAD && modelName == "person-detection-retail-0002")  // IRv5, OpenVINO 2020.4 regression
+        applyTestTag(CV_TEST_TAG_DNN_SKIP_IE_MYRIAD, CV_TEST_TAG_DNN_SKIP_IE_NGRAPH, CV_TEST_TAG_DNN_SKIP_IE_VERSION);
+#endif
+
+    ASSERT_EQ(DNN_BACKEND_INFERENCE_ENGINE_NGRAPH, backendId);
+
     bool isFP16 = (targetId == DNN_TARGET_OPENCL_FP16 || targetId == DNN_TARGET_MYRIAD);
 
-    const std::map<std::string, OpenVINOModelTestCaseInfo>& models = getOpenVINOTestModels();
-    const auto it = models.find(modelName);
-    ASSERT_TRUE(it != models.end()) << modelName;
-    OpenVINOModelTestCaseInfo modelInfo = it->second;
-    std::string modelPath = isFP16 ? modelInfo.modelPathFP16 : modelInfo.modelPathFP32;
+    const std::string modelPath = getOpenVINOModel(modelName, isFP16);
+    ASSERT_FALSE(modelPath.empty()) << modelName;
 
     std::string xmlPath = findDataFile(modelPath + ".xml", false);
     std::string binPath = findDataFile(modelPath + ".bin", false);
@@ -301,8 +360,12 @@ TEST_P(DNNTestOpenVINO, models)
     // Single Myriad device cannot be shared across multiple processes.
     if (targetId == DNN_TARGET_MYRIAD)
         resetMyriadDevice();
-    runIE(targetId, xmlPath, binPath, inputsMap, ieOutputsMap);
-    runCV(backendId, targetId, xmlPath, binPath, inputsMap, cvOutputsMap);
+    if (targetId == DNN_TARGET_HDDL)
+        releaseHDDLPlugin();
+    EXPECT_NO_THROW(runIE(targetId, xmlPath, binPath, inputsMap, ieOutputsMap)) << "runIE";
+    if (targetId == DNN_TARGET_MYRIAD)
+        resetMyriadDevice();
+    EXPECT_NO_THROW(runCV(backendId, targetId, xmlPath, binPath, inputsMap, cvOutputsMap)) << "runCV";
 
     double eps = 0;
 #if INF_ENGINE_VER_MAJOR_GE(2020010000)
@@ -315,6 +378,9 @@ TEST_P(DNNTestOpenVINO, models)
     {
         auto dstIt = cvOutputsMap.find(srcIt.first);
         CV_Assert(dstIt != cvOutputsMap.end());
+
+        dstIt->second.convertTo(dstIt->second, srcIt.second.type());
+
         double normInf = cvtest::norm(srcIt.second, dstIt->second, cv::NORM_INF);
         EXPECT_LE(normInf, eps) << "output=" << srcIt.first;
     }
@@ -335,13 +401,12 @@ TEST_P(DNNTestHighLevelAPI, predict)
 
     Target target = (dnn::Target)(int)GetParam();
     bool isFP16 = (target == DNN_TARGET_OPENCL_FP16 || target == DNN_TARGET_MYRIAD);
+    const std::string modelName = "age-gender-recognition-retail-0013";
+    const std::string modelPath = getOpenVINOModel(modelName, isFP16);
+    ASSERT_FALSE(modelPath.empty()) << modelName;
 
-    OpenVINOModelTestCaseInfo modelInfo = getOpenVINOTestModels().find("age-gender-recognition-retail-0013")->second;
-
-    std::string modelPath = isFP16 ? modelInfo.modelPathFP16 : modelInfo.modelPathFP32;
-
-    std::string xmlPath = findDataFile(modelPath + ".xml");
-    std::string binPath = findDataFile(modelPath + ".bin");
+    std::string xmlPath = findDataFile(modelPath + ".xml", false);
+    std::string binPath = findDataFile(modelPath + ".bin", false);
 
     Model model(xmlPath, binPath);
     Mat frame = imread(findDataFile("dnn/googlenet_1.png"));

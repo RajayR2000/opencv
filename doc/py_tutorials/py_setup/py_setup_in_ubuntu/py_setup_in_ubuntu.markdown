@@ -1,6 +1,8 @@
 Install OpenCV-Python in Ubuntu {#tutorial_py_setup_in_ubuntu}
 ===============================
 
+@note: Please prefer binaries distributed with PyPI, if possible. See @ref tutorial_py_pip_install for details.
+
 Goals
 -----
 
@@ -22,10 +24,10 @@ Installing OpenCV-Python from Pre-built Binaries
 
 This method serves best when using just for programming and developing OpenCV applications.
 
-Install package [python-opencv](https://packages.ubuntu.com/trusty/python-opencv) with following command in terminal (as root user).
+Install package [python3-opencv](https://packages.ubuntu.com/focal/python3-opencv) with following command in terminal (as root user).
 
 ```
-$ sudo apt-get install python-opencv
+$ sudo apt-get install python3-opencv
 ```
 
 Open Python IDLE (or IPython) and type following codes in Python terminal.

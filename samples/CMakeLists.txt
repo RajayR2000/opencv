@@ -25,7 +25,11 @@ add_subdirectory(java/tutorial_code)
 add_subdirectory(dnn)
 add_subdirectory(gpu)
 add_subdirectory(tapi)
-add_subdirectory(opencl)
+# HACK: CMake 4.x finds and links wrong OpenCL in 32-bit builds on Windows x64
+if(NOT (WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 4))
+  add_subdirectory(opencl)
+endif()
+add_subdirectory(sycl)
 if(WIN32 AND HAVE_DIRECTX)
   add_subdirectory(directx)
 endif()
@@ -35,7 +39,7 @@ endif()
 if(HAVE_OPENVX)
   add_subdirectory(openvx)
 endif()
-if(UNIX AND NOT ANDROID AND (HAVE_VA OR HAVE_VA_INTEL))
+if(UNIX AND NOT ANDROID AND HAVE_VA)
   add_subdirectory(va_intel)
 endif()
 if(ANDROID AND (BUILD_ANDROID_EXAMPLES OR INSTALL_ANDROID_EXAMPLES))
@@ -44,7 +48,12 @@ endif()
 if(INSTALL_PYTHON_EXAMPLES)
   add_subdirectory(python)
 endif()
-
+# The examples in this folder will work with a semihosting version of
+# OpenCV. For more information about semihosting, see
+# https://developer.arm.com/documentation/100863/latest
+if(OPENCV_SEMIHOSTING)
+  add_subdirectory(semihosting)
+endif()
 ocv_install_example_src("." CMakeLists.txt samples_utils.cmake)
 if(INSTALL_C_EXAMPLES)
   install(DIRECTORY data DESTINATION "${OPENCV_SAMPLES_SRC_INSTALL_PATH}" COMPONENT samples_data)
@@ -56,7 +65,7 @@ else()
 #  Standalone mode
 #
 #===================================================================================================
-cmake_minimum_required(VERSION 3.1)
+cmake_minimum_required(VERSION 3.5)
 
 project(samples C CXX)
 option(BUILD_EXAMPLES "Build samples" ON)
@@ -97,12 +106,12 @@ if(MSVC)
     endforeach(flag_var)
 
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /NODEFAULTLIB:atlthunk.lib /NODEFAULTLIB:msvcrt.lib /NODEFAULTLIB:msvcrtd.lib")
-    set(CMAKE_EXE_LINKER_FLAGS_DEBUG "${CMAKE_EXE_LINKER_FLAGS_DEBUG} /NODEFAULTLIB:libcmt.lib")
-    set(CMAKE_EXE_LINKER_FLAGS_RELEASE "${CMAKE_EXE_LINKER_FLAGS_RELEASE} /NODEFAULTLIB:libcmtd.lib")
+    if(NOT BUILD_WITH_STATIC_CRT)
+      set(CMAKE_EXE_LINKER_FLAGS_DEBUG "${CMAKE_EXE_LINKER_FLAGS_DEBUG} /NODEFAULTLIB:libcmt.lib")
+      set(CMAKE_EXE_LINKER_FLAGS_RELEASE "${CMAKE_EXE_LINKER_FLAGS_RELEASE} /NODEFAULTLIB:libcmtd.lib")
+    endif()
   endif()
 endif()
-
-add_definitions(-DDISABLE_OPENCV_24_COMPATIBILITY=1)  # Avoid C-like legacy API
 
 if(OPENCV_EXAMPLES_DISABLE_THREADS)
   # nothing
@@ -112,6 +121,7 @@ else()
   find_package(Threads)
 endif()
 if((TARGET Threads::Threads OR HAVE_THREADS) AND NOT OPENCV_EXAMPLES_DISABLE_THREADS)
+  set(HAVE_THREADS 1)
   add_definitions(-DHAVE_THREADS=1)
 endif()
 
@@ -121,7 +131,11 @@ if(WIN32)
 endif()
 add_subdirectory(dnn)
 # add_subdirectory(gpu)
-add_subdirectory(opencl)
+# HACK: CMake 4.x finds and links wrong OpenCL in 32-bit builds on Windows x64
+if(NOT (WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 4))
+  add_subdirectory(opencl)
+endif()
+add_subdirectory(sycl)
 # add_subdirectory(opengl)
 # add_subdirectory(openvx)
 add_subdirectory(tapi)

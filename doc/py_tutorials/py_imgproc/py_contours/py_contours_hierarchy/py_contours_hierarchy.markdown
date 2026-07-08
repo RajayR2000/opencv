@@ -1,6 +1,8 @@
 Contours Hierarchy {#tutorial_py_contours_hierarchy}
 ==================
 
+@prev_tutorial{tutorial_py_contours_more_functions}
+
 Goal
 ----
 
@@ -210,9 +212,3 @@ array([[[ 7, -1,  1, -1],
         [ 8,  0, -1, -1],
         [-1,  7, -1, -1]]])
 @endcode
-
-Additional Resources
---------------------
-
-Exercises
----------

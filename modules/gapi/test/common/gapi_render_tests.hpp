@@ -115,7 +115,7 @@ struct Fixture : public RenderNV12TestBase API {                  \
     __WRAP_VAARGS(DEFINE_SPECIFIC_PARAMS_##Number(__VA_ARGS__))   \
     Fixture() {                                                   \
         Init(sz_);                                                \
-    };                                                            \
+    }                                                             \
 };
 
 #define GAPI_RENDER_TEST_FIXTURE_BGR(Fixture, API, Number, ...)  \
@@ -123,13 +123,15 @@ struct Fixture : public RenderBGRTestBase API {                  \
     __WRAP_VAARGS(DEFINE_SPECIFIC_PARAMS_##Number(__VA_ARGS__))   \
     Fixture() {                                                   \
         Init(sz_);                                                \
-    };                                                            \
+    }                                                             \
 };
 
 #define GET_VA_ARGS(...) __VA_ARGS__
 #define GAPI_RENDER_TEST_FIXTURES(Fixture, API, Number, ...)                    \
     GAPI_RENDER_TEST_FIXTURE_BGR(RenderBGR##Fixture,   GET_VA_ARGS(API), Number, __VA_ARGS__) \
     GAPI_RENDER_TEST_FIXTURE_NV12(RenderNV12##Fixture, GET_VA_ARGS(API), Number, __VA_ARGS__) \
+    GAPI_RENDER_TEST_FIXTURE_NV12(RenderMFrame##Fixture, GET_VA_ARGS(API), Number, __VA_ARGS__) \
+
 
 using Points = std::vector<cv::Point>;
 GAPI_RENDER_TEST_FIXTURES(TestTexts,     FIXTURE_API(std::string, cv::Point, double, cv::Scalar), 4, text, org, fs, color)
